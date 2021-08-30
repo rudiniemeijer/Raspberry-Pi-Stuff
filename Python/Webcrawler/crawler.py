@@ -53,25 +53,27 @@ class Link (object):
 
 class Crawler(object):
 
-    def __init__(self, root, depth_limit, confine = None, exclude = [], locked = True, filter_seen = True):
+    def __init__(self, root, depth_limit, fetch_timeout, confine = None, exclude = [], locked = True, filter_seen = True):
         self.root = root
         self.host = urlparse(root).netloc
 
         ## Data for filters:
-        self.depth_limit = depth_limit        # Max depth (number of hops from root)
-        self.confine_prefix = confine         # Limit search to this prefix
-        self.exclude_prefixes = exclude;      # URL prefixes NOT to visit
-        self.locked = locked;                 # Limit crawl to the same host as the originating URL   
+        self.depth_limit = depth_limit              # Max depth (number of hops from root)
+        self.confine_prefix = confine               # Limit search to this prefix
+        self.exclude_prefixes = exclude;            # URL prefixes NOT to visit
+        self.locked = locked;                       # Limit crawl to the same host as the originating URL   
 
-        self.urls_seen = set()                # Used to avoid putting duplicates in queue (all mimetypes)
-        self.visited_links = set()            # Used to avoid re-processing a page
+        self.urls_seen = set()                      # Used to avoid putting duplicates in queue (all mimetypes)
+        self.visited_links = set()                  # Used to avoid re-processing a page
 
-        self.urls_remembered = set()          # For reporting to user (page URL for mimetype text/html)
-        self.links_remembered = set()         # For reporting to user (page URL -> URL)
+        self.urls_remembered = set()                # For reporting to user (page URL for mimetype text/html)
+        self.links_remembered = set()               # For reporting to user (page URL -> URL)
         
-        self.num_links = 0                    # Links found (and not excluded by filters)
-        self.num_followed = 0                 # Links followed.
+        self.num_links = 0                          # Links found (and not excluded by filters)
+        self.num_followed = 0                       # Links followed
+        self.num_failed_links = 0                   # Links that failed for some reason
 
+        self.fetch_timeout_seconds = fetch_timeout  # Timeout for fetching pages in seconds
 
         # Pre-visit filters:  Only visit a URL if it passes these tests
         self.pre_visit_filters=[self._prefix_ok,
@@ -161,6 +163,8 @@ class Crawler(object):
             this_url, depth = q.get()
             logging.debug("Got %s from queue to process with depth %d" % (this_url, depth))
             
+            logging.info("Following link %d (of which %d have failed)" % (self.num_followed, self.num_failed_links))
+            
             #Non-URL-specific filter: Discard anything over depth limit
             if depth > self.depth_limit:
                 logging.debug("Will not process any further because depth %d > depth limit %d" % (depth, self.depth_limit))
@@ -171,12 +175,12 @@ class Crawler(object):
 
             #If no filters failed (that is, all passed), process URL
             if do_not_follow == []:
-                logging.info("Processing [%d] %s" % (depth, this_url))
+                logging.info("Processing %s on depth %d" % (this_url, depth))
                 try:
                     self.visited_links.add(this_url)
                         
                     self.num_followed += 1
-                    page = Fetcher(this_url)
+                    page = Fetcher(this_url, self.fetch_timeout_seconds)
                     
                     page.fetch()
                     added_links = 0
@@ -193,8 +197,12 @@ class Crawler(object):
                             link = Link(this_url, link_url, "href")
                             if link not in self.links_remembered:
                                 self.links_remembered.add(link) # page -> url
-                            
-                    logging.debug("Added %d links for depth %d" % (added_links, depth + 1))
+
+                    if page.fetch_failed:
+                        self.num_failed_links += 1
+                        logging.warn("Fetching page %s did not work out" % this_url)
+                    else:
+                        logging.debug("Added %d links for depth %d" % (added_links, depth + 1))
 
                 except Exception as e:
                     logging.debug("Can't process url '%s' (%s)" % (this_url, e))
@@ -213,9 +221,12 @@ class Fetcher(object):
     
     """The name Fetcher is a slight misnomer: This class retrieves and interprets web pages."""
 
-    def __init__(self, url):
+    def __init__(self, url, fetch_timeout):
         self.url = url
         self.out_urls = []
+
+        self.fetch_timeout_seconds = fetch_timeout  # Timeout for fetching pages in seconds
+        self.fetch_failed = False                   # Set to True if fetching a page failed
 
     def __getitem__(self, x):
         return self.out_urls[x]
@@ -235,14 +246,16 @@ class Fetcher(object):
         except IOError:
             logging.debug("Error opening %s" % url)
             return None
+        logging.debug("Successfullly opened %s" % urlparse(url).netloc)
         return (request, handle)
 
     def fetch(self):
         request, handle = self._open()
         self._addHeaders(request)
+        self.fetch_failed = False
         if handle:
             try:
-                data = handle.open(request)
+                data = handle.open(request, timeout=self.fetch_timeout_seconds)
                 logging.debug("Succesfully connected to host")
                 mime_type = data.info().get_content_type()
                 logging.debug("Mimetype is %s" % mime_type)
@@ -261,9 +274,11 @@ class Fetcher(object):
                     logging.debug("Error 404 while fetching %s" % error.url)
                 else:
                     logging.debug("Error %s while fetching" % error)
+                self.fetch_failed = True
                 tags = []
             except urllib.error.URLError as error:
                 logging.debug("Error %s while fetching" % error)
+                self.fetch_failed = True
                 tags = []
             except OpaqueDataException as error:
                 logging.debug("Skipping %s (has mimetype %s)" % (error.url, error.mimetype))
@@ -289,6 +304,10 @@ def parse_options():
     parser.add_option("-d", "--depth",
             action="store", type="int", default=3, dest="depth_limit",
             help="Maximum depth to traverse (default is 3)")
+
+    parser.add_option("-t", "--timeout",
+            action="store", type="int", default=5, dest="fetch_timeout",
+            help="Maximum wait time in seconds while fetching pages (default is 5 seconds)")
 
     parser.add_option("-c", "--confine",
             action="store", type="string", dest="confine",
@@ -328,14 +347,16 @@ def main():
     url = args[0]
 
     depth_limit = opts.depth_limit
+    fetch_timeout = opts.fetch_timeout
     confine_prefix = opts.confine
     exclude = opts.exclude
 
     sTime = time.time()
 
     logging.info("Recursive crawling started with maximum traversing depth set to %d" % depth_limit)
+    logging.info("Maximum wait time per fetched page set to %d seconds" % fetch_timeout)
     
-    crawler = Crawler(url, depth_limit, confine_prefix, exclude, locked=(not opts.unlocked))        
+    crawler = Crawler(url, depth_limit, fetch_timeout, confine_prefix, exclude, locked=(not opts.unlocked))        
     crawler.crawl()
                           
     if opts.out_urls:
@@ -347,7 +368,7 @@ def main():
     eTime = time.time()
     tTime = eTime - sTime
 
-    logging.info("Crawling completed with %d links found and %d followed" % (crawler.num_links, crawler.num_followed))
+    logging.info("Crawling completed with %d links found, %d followed en %d failed fetches" % (crawler.num_links, crawler.num_followed, crawler.num_failed_links))
     logging.info("Found %d links per second in %0.2f seconds" % (int(math.ceil(float(crawler.num_links) / tTime)), tTime))
 
 if __name__ == "__main__":
