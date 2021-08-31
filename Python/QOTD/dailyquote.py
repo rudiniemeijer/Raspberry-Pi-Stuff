@@ -1,3 +1,5 @@
+# dailyquote.py
+
 from random import randint
 from datetime import date
 
@@ -10,7 +12,7 @@ class Qotd:
             self.today = date
             self.todays_quote = self._quotes[randint(0,len(self._quotes))]
 
-        return "%s --%s" % (self.todays_quote["quote"], self.todays_quote["author"])
+        return "%s --%s\n" % (self.todays_quote["quote"], self.todays_quote["author"])
 
     _quotes = [
         {
