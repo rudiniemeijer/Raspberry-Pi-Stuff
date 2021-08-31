@@ -64,6 +64,7 @@ class Crawler(object):
         self.locked = locked;                       # Limit crawl to the same host as the originating URL   
 
         self.urls_seen = set()                      # Used to avoid putting duplicates in queue (all mimetypes)
+        self.hosts_seen = set()                     # Used to keep track of hosts
         self.visited_links = set()                  # Used to avoid re-processing a page
 
         self.urls_remembered = set()                # For reporting to user (page URL for mimetype text/html)
@@ -178,6 +179,12 @@ class Crawler(object):
                 logging.info("Processing %s on depth %d" % (this_url, depth))
                 try:
                     self.visited_links.add(this_url)
+                    this_host = urlparse(this_url).netloc
+
+                    if this_host not in self.hosts_seen:
+                        self.hosts_seen.add(this_host)
+                        logging.info("New host %s encountered" % this_host)
+                        print(this_host)
                         
                     self.num_followed += 1
                     page = Fetcher(this_url, self.fetch_timeout_seconds)
@@ -200,7 +207,7 @@ class Crawler(object):
 
                     if page.fetch_failed:
                         self.num_failed_links += 1
-                        logging.warn("Fetching page %s did not work out" % this_url)
+                        logging.warning("Fetching page %s did not work out" % this_url)
                     else:
                         logging.debug("Added %d links for depth %d" % (added_links, depth + 1))
 
