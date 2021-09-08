@@ -4,6 +4,7 @@ def step_impl(context):
     mijn_bestand = open(context.filename, "wt")
     mijn_bestand.close()
 
+
 @when(u'I open this file')
 def step_impl(context):
     mijn_bestand = open(context.filename, "at")
