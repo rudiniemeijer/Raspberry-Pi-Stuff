@@ -12,3 +12,13 @@ Scenario: Create a file
       | Cucumber        | 0            |
       | Robot Framework | 42           |
     Then This file has 3 lines in it
+
+Scenario: Append to an existing file
+    Given This file has 3 lines in it
+    When I append to this file
+    And write the following table in it
+      | course          | participants |
+      | TestComplete    | 305          |
+      | Katalon Studio  | 12           |
+      | Postman         | 100          |
+    Then This file has 6 lines in it
